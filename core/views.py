@@ -1,8 +1,10 @@
 from rest_framework import viewsets, views, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
-from django.db.models import Sum, Q
-from datetime import date
+from django.db import models  # <--- FALTAVA ISTO
+from django.db.models import Sum, F, Q
+from django.db.models.functions import Coalesce
+from datetime import date, timedelta
 from .models import Cliente, Material, Arquiteto, Agenda, Orcamento, Recebimento, Parcela, Comissao
 from .serializers import *
 
@@ -52,10 +54,26 @@ class ComissaoViewSet(viewsets.ModelViewSet):
 
 class DashboardFinanceiroView(views.APIView):
     def get(self, request):
-        # Total a receber (Parcelas não pagas)
-        total = Parcela.objects.filter(valor_recebido__lt=models.F('valor_parcela')).aggregate(Sum('valor_parcela'))
-        # Nota: O cálculo exato pode precisar subtrair o valor_recebido parcial, mas para simplificar:
-        return Response({'total_a_receber': total['valor_parcela__sum'] or 0.0})
+        # Define o campo de valor restante (Parcela - Pago)
+        # Usamos Coalesce para garantir que nulos virem 0
+        valor_restante = F('valor_parcela') - Coalesce(F('valor_recebido'), 0)
+        
+        # 1. Total Geral a Receber
+        total_geral = Parcela.objects.annotate(restante=valor_restante).filter(
+            restante__gt=0.01 # Filtra apenas o que falta pagar
+        ).aggregate(Sum('restante'))
+
+        # 2. Total a Receber (Próximos 30 dias)
+        data_limite = date.today() + timedelta(days=30)
+        total_30d = Parcela.objects.annotate(restante=valor_restante).filter(
+            restante__gt=0.01,
+            data_vencimento__range=[date.today(), data_limite]
+        ).aggregate(Sum('restante'))
+
+        return Response({
+            'total_a_receber': total_geral['restante__sum'] or 0.0,
+            'total_a_receber_30d': total_30d['restante__sum'] or 0.0
+        })
 
 class DashboardProjetosView(views.APIView):
     def get(self, request):
@@ -64,14 +82,14 @@ class DashboardProjetosView(views.APIView):
 
 class RelatorioCompletoView(views.APIView):
     def get(self, request):
-        # Lógica simplificada do relatório
         agendas = Agenda.objects.all().select_related('cliente').order_by('-data_previsao_termino')[:100]
         dados = []
         for a in agendas:
+            # Tenta pegar info básica para preencher a lista
             dados.append({
                 "projeto": a.descricao,
                 "cliente": a.cliente.nome if a.cliente else "N/A",
                 "data": a.data_previsao_termino,
-                # Adicionar mais campos conforme necessário
+                "data_inicio": a.data_inicio,
             })
         return Response(dados)
