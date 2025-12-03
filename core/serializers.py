@@ -17,9 +17,7 @@ class ArquitetoSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class AgendaSerializer(serializers.ModelSerializer):
-    # Trazemos o nome do cliente para facilitar a leitura no frontend
     cliente_nome = serializers.CharField(source='cliente.nome', read_only=True)
-    
     class Meta:
         model = Agenda
         fields = '__all__'
@@ -36,12 +34,15 @@ class ParcelaSerializer(serializers.ModelSerializer):
 
 class RecebimentoSerializer(serializers.ModelSerializer):
     parcelas = ParcelaSerializer(many=True, read_only=True, source='parcela_set')
-    
     class Meta:
         model = Recebimento
         fields = '__all__'
 
 class ComissaoSerializer(serializers.ModelSerializer):
+    # Adicionamos estes campos extras para a tabela de comissões do Desktop
+    cliente_nome = serializers.CharField(source='cliente.nome', read_only=True)
+    projeto_nome = serializers.CharField(source='recebimento.agenda.descricao', read_only=True)
+    
     class Meta:
         model = Comissao
         fields = '__all__'

@@ -16,5 +16,6 @@ urlpatterns = [
     path('', include(router.urls)),
     path('dashboard/financeiro/', DashboardFinanceiroView.as_view()),
     path('dashboard/projetos/', DashboardProjetosView.as_view()),
+    path('dashboard/eventos/', DashboardEventosView.as_view()), # <--- NOVA
     path('relatorios/completo/', RelatorioCompletoView.as_view()),
 ]
