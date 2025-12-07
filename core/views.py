@@ -3,9 +3,39 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.db.models import Sum, F, Value, DecimalField, Q
 from django.db.models.functions import Coalesce
+from django.contrib.auth.models import User # <--- Importante
+from django.contrib.auth import authenticate # <--- Importante
 from datetime import date, timedelta, datetime
 from .models import Cliente, Material, Arquiteto, Agenda, Orcamento, Recebimento, Parcela, Comissao
 from .serializers import *
+
+# =============================================================================
+#                               LOGIN & USUÁRIOS
+# =============================================================================
+
+class LoginView(views.APIView):
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+        
+        # Verifica se as credenciais batem com o banco do Django
+        user = authenticate(username=username, password=password)
+        
+        if user:
+            return Response({
+                'id': user.id,
+                'token': 'sessao_valida_bellas_artes', # Token simples fixo (já que o desktop gerencia)
+                'first_name': user.first_name or user.username,
+                'email': user.email,
+                'username': user.username
+            }, status=200)
+        else:
+            return Response({'error': 'Credenciais inválidas'}, status=401)
+
+class UserViewSet(viewsets.ModelViewSet):
+    # Endpoint para editar o perfil (GET/PUT)
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
 
 # =============================================================================
 #                               VIEWSETS (CRUD Básico)
@@ -23,7 +53,6 @@ class ClienteViewSet(viewsets.ModelViewSet):
         cliente, created = Cliente.objects.get_or_create(nome=nome)
         return Response({'id': cliente.id, 'nome': cliente.nome})
     
-    # Para o combobox/autocomplete
     @action(detail=False, methods=['get'])
     def search(self, request):
         term = request.query_params.get('q', '')
@@ -42,10 +71,8 @@ class AgendaViewSet(viewsets.ModelViewSet):
     queryset = Agenda.objects.all().order_by('-data_previsao_termino')
     serializer_class = AgendaSerializer
 
-    # Endpoint para alimentar as bolinhas do calendário (Datas ocupadas)
     @action(detail=False, methods=['get'])
     def datas_calendario(self, request):
-        # Busca datas de início e fim
         agendas = Agenda.objects.all().values('data_inicio', 'data_previsao_termino')
         datas = set()
         for a in agendas:
@@ -65,31 +92,23 @@ class ParcelaViewSet(viewsets.ModelViewSet):
     queryset = Parcela.objects.all().order_by('data_vencimento')
     serializer_class = ParcelaSerializer
 
-    # Endpoint para as bolinhas do calendário (Vencimentos)
     @action(detail=False, methods=['get'])
     def datas_vencimento(self, request):
-        # Filtra parcelas pendentes (valor_parcela > recebido)
-        # Nota: O Django não aceita comparação direta F() > F() em filter simples sem annotate em versões antigas, 
-        # mas aqui usamos a lógica de saldo.
         pendentes = Parcela.objects.annotate(
             saldo=F('valor_parcela') - Coalesce('valor_recebido', Value(0, output_field=DecimalField()))
         ).filter(saldo__gt=0.01, num_parcela__gt=0).values_list('data_vencimento', flat=True).distinct()
-        
         return Response(list(pendentes))
     
-    # Lista específica para "Próximas Parcelas" da Dashboard
     @action(detail=False, methods=['get'])
     def proximas_pendentes(self, request):
         hoje = date.today()
-        # Lógica do SQLite: num_parcela != 0, pendente > 0.01, vencimento >= hoje
         parcelas = Parcela.objects.annotate(
             saldo=F('valor_parcela') - Coalesce('valor_recebido', Value(0, output_field=DecimalField()))
         ).filter(
             num_parcela__gt=0,
             saldo__gt=0.01,
             data_vencimento__gte=hoje
-        ).order_by('data_vencimento')[:10] # Limit 10 como no SQLite
-        
+        ).order_by('data_vencimento')[:10]
         serializer = self.get_serializer(parcelas, many=True)
         return Response(serializer.data)
 
@@ -103,33 +122,22 @@ class ComissaoViewSet(viewsets.ModelViewSet):
 
 class DashboardFinanceiroView(views.APIView):
     def get(self, request):
-        # Lógica migrada do SQLite: get_total_a_receber_geral, etc.
         valor_restante = F('valor_parcela') - Coalesce(F('valor_recebido'), Value(0, output_field=DecimalField()))
         
-        # 1. Total Geral a Receber
         total_geral = Parcela.objects.filter(num_parcela__gt=0).annotate(restante=valor_restante).filter(
             restante__gt=0.01
         ).aggregate(Sum('restante'))
 
-        # 2. Total a Receber (Próximos 30 dias)
         limite = date.today() + timedelta(days=30)
         total_30d = Parcela.objects.filter(num_parcela__gt=0).annotate(restante=valor_restante).filter(
             restante__gt=0.01,
             data_vencimento__range=[date.today(), limite]
         ).aggregate(Sum('restante'))
 
-        # 3. Total Já Recebido (Global)
         total_recebido = Parcela.objects.aggregate(Sum('valor_recebido'))
         
-        # 4. Comissões Pagas (Até hoje)
-        comissoes_pagas = Comissao.objects.filter(
-            data__lte=date.today()
-        ).aggregate(Sum('valor'))
-
-        # 5. Comissões Pendentes (Futuras)
-        comissoes_pendentes = Comissao.objects.filter(
-            data__gt=date.today()
-        ).aggregate(Sum('valor'))
+        comissoes_pagas = Comissao.objects.filter(data__lte=date.today()).aggregate(Sum('valor'))
+        comissoes_pendentes = Comissao.objects.filter(data__gt=date.today()).aggregate(Sum('valor'))
 
         return Response({
             'total_a_receber': total_geral['restante__sum'] or 0.0,
@@ -142,8 +150,6 @@ class DashboardFinanceiroView(views.APIView):
 class DashboardEventosView(views.APIView):
     def get(self, request):
         hoje = date.today()
-        
-        # Se passar ?data=YYYY-MM-DD na URL, filtra por esse dia (para o clique no calendário)
         filtro_data = request.query_params.get('data')
         
         if filtro_data:
@@ -152,10 +158,7 @@ class DashboardEventosView(views.APIView):
             except ValueError:
                 return Response({'error': 'Formato de data inválido'}, status=400)
                 
-            # Buscar eventos do dia (Lógica get_eventos_do_dia do SQLite)
             eventos = []
-            
-            # Inícios e Entregas
             agendas = Agenda.objects.filter(Q(data_inicio=data_alvo) | Q(data_previsao_termino=data_alvo))
             for a in agendas:
                 cli = a.cliente.nome if a.cliente else "Cliente N/A"
@@ -164,13 +167,11 @@ class DashboardEventosView(views.APIView):
                 if a.data_previsao_termino == data_alvo:
                     eventos.append({'tipo': 'Entrega', 'descricao': f"Entrega: {a.descricao}", 'cliente': cli})
             
-            # Vencimentos de Parcelas
             parcelas = Parcela.objects.filter(data_vencimento=data_alvo, num_parcela__gt=0).annotate(
                 saldo=F('valor_parcela') - Coalesce('valor_recebido', Value(0, output_field=DecimalField()))
             ).filter(saldo__gt=0.01)
             
             for p in parcelas:
-                # Tenta chegar ao cliente através do recebimento
                 cli_nome = "Cliente N/A"
                 proj_desc = "Geral"
                 if p.recebimento:
@@ -187,7 +188,6 @@ class DashboardEventosView(views.APIView):
             return Response(eventos)
 
         else:
-            # Comportamento padrão: Próximo Evento Unificado
             proximo_inicio = Agenda.objects.filter(data_inicio__gte=hoje).order_by('data_inicio').first()
             proximo_fim = Agenda.objects.filter(data_previsao_termino__gte=hoje).order_by('data_previsao_termino').first()
             
@@ -221,18 +221,13 @@ class DashboardProjetosView(views.APIView):
 
 class RelatorioCompletoView(views.APIView):
     def get(self, request):
-        # Esta era a parte crítica que faltava lógica
-        # Vamos usar select_related para evitar fazer 100 consultas ao banco (N+1 problem)
         agendas = Agenda.objects.all().select_related('cliente').order_by('-data_previsao_termino')[:100]
         
         dados = []
         for a in agendas:
-            # Tentar encontrar Orçamento e Recebimento ligados a esta agenda
             orcamento = Orcamento.objects.filter(agenda=a).first()
             recebimento = Recebimento.objects.filter(agenda=a).first()
             
-            # --- 1. Valor do Projeto ---
-            # Prioridade: Valor Negociado (Recebimento) > Valor Orçado
             valor_projeto = 0.0
             tipo_pagamento = "N/D"
             num_parcelas = 0
@@ -242,35 +237,29 @@ class RelatorioCompletoView(views.APIView):
                 tipo_pagamento = recebimento.tipo_pagamento
                 num_parcelas = recebimento.num_parcelas
             elif orcamento:
-                # O orcamento.valor_total_final é CharField, precisamos limpar e converter
                 val_str = orcamento.valor_total_final or "0"
                 val_str = val_str.replace("R$", "").replace(".", "").replace(",", ".").strip()
                 try: valor_projeto = float(val_str)
                 except: valor_projeto = 0.0
             
-            # --- 2. Total Recebido (Soma das parcelas pagas) ---
             total_recebido = 0.0
             if recebimento:
                 soma = Parcela.objects.filter(recebimento=recebimento).aggregate(Sum('valor_recebido'))
                 total_recebido = float(soma['valor_recebido__sum'] or 0.0)
 
-            # --- 3. Total de Comissões ---
             total_comissao = 0.0
             arquiteto_nome = ""
             if recebimento:
                 comissoes = Comissao.objects.filter(recebimento=recebimento)
                 soma_com = comissoes.aggregate(Sum('valor'))
                 total_comissao = float(soma_com['valor__sum'] or 0.0)
-                
-                # Pegar nome do primeiro beneficiário para exibir
                 primeira = comissoes.first()
                 if primeira: arquiteto_nome = primeira.beneficiario
             
-            # Montar objeto final igual ao SQLite retornava
             dados.append({
                 "agenda_id": a.id,
                 "data_inicio": a.data_inicio,
-                "data": a.data_previsao_termino, # Data de entrega
+                "data": a.data_previsao_termino,
                 "cliente": a.cliente.nome if a.cliente else "Cliente N/A",
                 "projeto": a.descricao or "Sem Descrição",
                 "tipo_pagamento": tipo_pagamento,

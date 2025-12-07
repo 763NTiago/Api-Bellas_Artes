@@ -1,5 +1,31 @@
 from rest_framework import serializers
+from django.contrib.auth.models import User # <--- Importante
 from .models import Cliente, Material, Arquiteto, Agenda, Orcamento, Recebimento, Parcela, Comissao
+
+# =============================================================================
+#                               SERIALIZERS DE USUÁRIO
+# =============================================================================
+
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        # Campos que o Desktop vai ler/escrever
+        fields = ['id', 'username', 'first_name', 'email', 'password']
+        # 'password' é write_only para não retornar a senha criptografada no GET
+        extra_kwargs = {'password': {'write_only': True, 'required': False}}
+
+    def update(self, instance, validated_data):
+        # Lógica para criptografar a senha se ela for alterada
+        password = validated_data.pop('password', None)
+        user = super().update(instance, validated_data)
+        if password:
+            user.set_password(password)
+            user.save()
+        return user
+
+# =============================================================================
+#                               SERIALIZERS DO SISTEMA
+# =============================================================================
 
 class ClienteSerializer(serializers.ModelSerializer):
     class Meta:
@@ -17,7 +43,6 @@ class ArquitetoSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class AgendaSerializer(serializers.ModelSerializer):
-    # Compatibilidade: Envia 'cliente_nome' E 'nome' (como o SQL antigo fazia)
     cliente_nome = serializers.SerializerMethodField()
     nome = serializers.SerializerMethodField()
     
@@ -54,23 +79,20 @@ class RecebimentoSerializer(serializers.ModelSerializer):
     def get_cliente_nome(self, obj):
         return obj.cliente.nome if obj.cliente else "Cliente N/A"
     
-    def get_nome(self, obj): # O SQLite retornava 'c.nome'
+    def get_nome(self, obj):
         return self.get_cliente_nome(obj)
     
     def get_projeto_nome(self, obj):
         return obj.agenda.descricao if obj.agenda else "Geral"
 
-    def get_projeto(self, obj): # Alias para compatibilidade
+    def get_projeto(self, obj):
         return self.get_projeto_nome(obj)
 
 class ParcelaSerializer(serializers.ModelSerializer):
-    # AQUI ESTAVA O ERRO: O Desktop busca 'nome' e 'projeto'
     cliente_nome = serializers.SerializerMethodField()
     nome = serializers.SerializerMethodField() 
-    
     projeto_nome = serializers.SerializerMethodField()
     projeto = serializers.SerializerMethodField()
-    
     nome_parcela = serializers.SerializerMethodField()
 
     class Meta:
@@ -82,7 +104,6 @@ class ParcelaSerializer(serializers.ModelSerializer):
         except: return "Cliente N/A"
 
     def get_nome(self, obj): 
-        # Esta é a "Cola" que conserta o erro KeyError: 'nome'
         return self.get_cliente_nome(obj)
 
     def get_projeto_nome(self, obj):
@@ -99,7 +120,6 @@ class ParcelaSerializer(serializers.ModelSerializer):
 class ComissaoSerializer(serializers.ModelSerializer):
     cliente_nome = serializers.SerializerMethodField()
     nome = serializers.SerializerMethodField()
-    
     projeto_nome = serializers.SerializerMethodField()
     
     class Meta:
