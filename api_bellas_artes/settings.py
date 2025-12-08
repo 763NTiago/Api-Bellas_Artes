@@ -5,6 +5,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = 'django-insecure-chave-temporaria-para-teste-bellas-artes'
 
+# Podes manter True para testar se há erros, mas em produção o ideal é False
 DEBUG = True
 
 ALLOWED_HOSTS = ['72.61.129.140', 'localhost', '127.0.0.1']
@@ -24,6 +25,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware', # <--- ADICIONADO AQUI
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -88,6 +90,19 @@ USE_I18N = True
 
 USE_TZ = True
 
+# --- CONFIGURAÇÃO DE ARQUIVOS ESTÁTICOS (CSS) ---
+
 STATIC_URL = 'static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+# Configuração moderna para Django 5.0+ usar o WhiteNoise
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
