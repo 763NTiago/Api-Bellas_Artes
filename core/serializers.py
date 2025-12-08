@@ -1,31 +1,20 @@
 from rest_framework import serializers
-from django.contrib.auth.models import User # <--- Importante
+from django.contrib.auth.models import User
 from .models import Cliente, Material, Arquiteto, Agenda, Orcamento, Recebimento, Parcela, Comissao
-
-# =============================================================================
-#                               SERIALIZERS DE USUÁRIO
-# =============================================================================
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        # Campos que o Desktop vai ler/escrever
         fields = ['id', 'username', 'first_name', 'email', 'password']
-        # 'password' é write_only para não retornar a senha criptografada no GET
         extra_kwargs = {'password': {'write_only': True, 'required': False}}
 
     def update(self, instance, validated_data):
-        # Lógica para criptografar a senha se ela for alterada
         password = validated_data.pop('password', None)
         user = super().update(instance, validated_data)
         if password:
             user.set_password(password)
             user.save()
         return user
-
-# =============================================================================
-#                               SERIALIZERS DO SISTEMA
-# =============================================================================
 
 class ClienteSerializer(serializers.ModelSerializer):
     class Meta:
