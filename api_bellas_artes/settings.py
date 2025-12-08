@@ -7,7 +7,7 @@ SECRET_KEY = 'django-insecure-chave-temporaria-para-teste-bellas-artes'
 
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ['72.61.129.140', 'localhost', '127.0.0.1']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
