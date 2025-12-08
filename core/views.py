@@ -136,69 +136,115 @@ class DashboardFinanceiroView(views.APIView):
 class DashboardEventosView(views.APIView):
     def get(self, request):
         hoje = date.today()
-        filtro_data = request.query_params.get('data')
+        # Se vier 'data', é clique no calendário. Se não, é o card "Próximo Evento".
+        filtro_data = request.query_params.get('data') 
         
         if filtro_data:
+            # --- MODO 1: EVENTOS DO DIA (Clique no Calendário) ---
             try:
                 data_alvo = datetime.strptime(filtro_data, '%Y-%m-%d').date()
             except ValueError:
                 return Response({'error': 'Formato de data inválido'}, status=400)
                 
             eventos = []
+            
+            # 1. Agenda (Início e Fim)
             agendas = Agenda.objects.filter(Q(data_inicio=data_alvo) | Q(data_previsao_termino=data_alvo))
             for a in agendas:
                 cli = a.cliente.nome if a.cliente else "Cliente N/A"
                 if a.data_inicio == data_alvo:
-                    eventos.append({'tipo': 'Início', 'descricao': f"Início: {a.descricao}", 'cliente': cli})
+                    eventos.append({'tipo': 'Início', 'descricao': f"Início: {a.descricao or ''}", 'cliente': cli, 'valor': 0.0, 'data': filtro_data})
                 if a.data_previsao_termino == data_alvo:
-                    eventos.append({'tipo': 'Entrega', 'descricao': f"Entrega: {a.descricao}", 'cliente': cli})
+                    eventos.append({'tipo': 'Entrega', 'descricao': f"Entrega: {a.descricao or ''}", 'cliente': cli, 'valor': 0.0, 'data': filtro_data})
             
-            parcelas = Parcela.objects.filter(data_vencimento=data_alvo, num_parcela__gt=0).annotate(
+            # 2. Financeiro (Vencimentos)
+            parcelas = Parcela.objects.annotate(
                 saldo=F('valor_parcela') - Coalesce('valor_recebido', Value(0, output_field=DecimalField()))
-            ).filter(saldo__gt=0.01)
+            ).filter(
+                data_vencimento=data_alvo, 
+                num_parcela__gt=0,
+                saldo__gt=0.01
+            )
             
             for p in parcelas:
                 cli_nome = "Cliente N/A"
                 proj_desc = "Geral"
                 if p.recebimento:
                     if p.recebimento.cliente: cli_nome = p.recebimento.cliente.nome
-                    if p.recebimento.agenda: proj_desc = p.recebimento.agenda.descricao
+                    if p.recebimento.agenda: proj_desc = p.recebimento.agenda.descricao or ""
                 
                 eventos.append({
-                    'tipo': 'Vencimento',
+                    'tipo': 'Receber',
                     'descricao': f"Parc. {p.num_parcela} - {proj_desc}",
                     'cliente': cli_nome,
-                    'valor': p.saldo
+                    'valor': float(p.saldo),
+                    'data': filtro_data
                 })
             
             return Response(eventos)
 
         else:
-            proximo_inicio = Agenda.objects.filter(data_inicio__gte=hoje).order_by('data_inicio').first()
-            proximo_fim = Agenda.objects.filter(data_previsao_termino__gte=hoje).order_by('data_previsao_termino').first()
-            
+            # --- MODO 2: PRÓXIMO EVENTO UNIFICADO (Card da Home) ---
+            # Procura o que está mais próximo de HOJE (Agenda ou Financeiro)
             candidatos = []
-            if proximo_inicio:
+            
+            # A. Próximo Início de Projeto
+            prox_ini = Agenda.objects.filter(data_inicio__gte=hoje).order_by('data_inicio').first()
+            if prox_ini:
                 candidatos.append({
-                    'data_evento': proximo_inicio.data_inicio,
-                    'tipo': 'Início', 
-                    'descricao': proximo_inicio.descricao or "Sem Descrição",
-                    'cliente_nome': proximo_inicio.cliente.nome if proximo_inicio.cliente else "N/A"
+                    'obj': prox_ini.data_inicio, # Objeto date para ordenação
+                    'data': prox_ini.data_inicio.strftime('%Y-%m-%d'),
+                    'tipo': 'Início',
+                    'cliente': prox_ini.cliente.nome if prox_ini.cliente else "N/A",
+                    'descricao': prox_ini.descricao or "Início de Projeto",
+                    'valor': 0.0
                 })
-            if proximo_fim:
+
+            # B. Próxima Entrega
+            prox_fim = Agenda.objects.filter(data_previsao_termino__gte=hoje).order_by('data_previsao_termino').first()
+            if prox_fim:
                 candidatos.append({
-                    'data_evento': proximo_fim.data_previsao_termino,
+                    'obj': prox_fim.data_previsao_termino,
+                    'data': prox_fim.data_previsao_termino.strftime('%Y-%m-%d'),
                     'tipo': 'Entrega',
-                    'descricao': proximo_fim.descricao or "Sem Descrição",
-                    'cliente_nome': proximo_fim.cliente.nome if proximo_fim.cliente else "N/A"
+                    'cliente': prox_fim.cliente.nome if prox_fim.cliente else "N/A",
+                    'descricao': prox_fim.descricao or "Entrega de Projeto",
+                    'valor': 0.0
                 })
                 
-            if not candidatos: return Response({})
+            # C. Próximo Vencimento (Parcela Pendente)
+            prox_parc = Parcela.objects.annotate(
+                saldo=F('valor_parcela') - Coalesce('valor_recebido', Value(0, output_field=DecimalField()))
+            ).filter(
+                data_vencimento__gte=hoje,
+                num_parcela__gt=0,
+                saldo__gt=0.01
+            ).order_by('data_vencimento').first()
+
+            if prox_parc:
+                nome_cli = "N/A"
+                if prox_parc.recebimento and prox_parc.recebimento.cliente:
+                    nome_cli = prox_parc.recebimento.cliente.nome
+                
+                candidatos.append({
+                    'obj': prox_parc.data_vencimento,
+                    'data': prox_parc.data_vencimento.strftime('%Y-%m-%d'),
+                    'tipo': 'Receber',
+                    'cliente': nome_cli,
+                    'descricao': f"Parcela {prox_parc.num_parcela}",
+                    'valor': float(prox_parc.saldo)
+                })
+
+            if not candidatos:
+                return Response([]) # Retorna lista vazia, Android trata como "Sem eventos"
             
-            candidatos.sort(key=lambda x: x['data_evento'])
-            evento = candidatos[0]
-            evento['dias'] = (evento['data_evento'] - hoje).days
-            return Response(evento)
+            # Ordena pela data mais próxima e pega o vencedor
+            candidatos.sort(key=lambda x: x['obj'])
+            vencedor = candidatos[0]
+            del vencedor['obj'] # Remove o objeto date antes de serializar
+            
+            # IMPORTANTE: Retorna uma LISTA com 1 elemento, pois o Android espera List<EventoDia>
+            return Response([vencedor])
 
 class DashboardProjetosView(views.APIView):
     def get(self, request):
