@@ -3,28 +3,23 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.db.models import Sum, F, Value, DecimalField, Q
 from django.db.models.functions import Coalesce
-from django.contrib.auth.models import User # <--- Importante
-from django.contrib.auth import authenticate # <--- Importante
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
 from datetime import date, timedelta, datetime
 from .models import Cliente, Material, Arquiteto, Agenda, Orcamento, Recebimento, Parcela, Comissao
 from .serializers import *
-
-# =============================================================================
-#                               LOGIN & USUÁRIOS
-# =============================================================================
 
 class LoginView(views.APIView):
     def post(self, request):
         username = request.data.get('username')
         password = request.data.get('password')
         
-        # Verifica se as credenciais batem com o banco do Django
         user = authenticate(username=username, password=password)
         
         if user:
             return Response({
                 'id': user.id,
-                'token': 'sessao_valida_bellas_artes', # Token simples fixo (já que o desktop gerencia)
+                'token': 'sessao_valida_bellas_artes',
                 'first_name': user.first_name or user.username,
                 'email': user.email,
                 'username': user.username
@@ -33,13 +28,8 @@ class LoginView(views.APIView):
             return Response({'error': 'Credenciais inválidas'}, status=401)
 
 class UserViewSet(viewsets.ModelViewSet):
-    # Endpoint para editar o perfil (GET/PUT)
     queryset = User.objects.all()
     serializer_class = UserSerializer
-
-# =============================================================================
-#                               VIEWSETS (CRUD Básico)
-# =============================================================================
 
 class ClienteViewSet(viewsets.ModelViewSet):
     queryset = Cliente.objects.all().order_by('nome')
@@ -115,10 +105,6 @@ class ParcelaViewSet(viewsets.ModelViewSet):
 class ComissaoViewSet(viewsets.ModelViewSet):
     queryset = Comissao.objects.all().order_by('-data')
     serializer_class = ComissaoSerializer
-
-# =============================================================================
-#                           DASHBOARDS & RELATÓRIOS
-# =============================================================================
 
 class DashboardFinanceiroView(views.APIView):
     def get(self, request):
@@ -221,7 +207,7 @@ class DashboardProjetosView(views.APIView):
 
 class RelatorioCompletoView(views.APIView):
     def get(self, request):
-        agendas = Agenda.objects.all().select_related('cliente').order_by('-data_previsao_termino')[:100]
+        agendas = Agenda.objects.all().select_related('cliente').order_by('-data_previsao_termino')
         
         dados = []
         for a in agendas:
@@ -237,10 +223,16 @@ class RelatorioCompletoView(views.APIView):
                 tipo_pagamento = recebimento.tipo_pagamento
                 num_parcelas = recebimento.num_parcelas
             elif orcamento:
-                val_str = orcamento.valor_total_final or "0"
-                val_str = val_str.replace("R$", "").replace(".", "").replace(",", ".").strip()
-                try: valor_projeto = float(val_str)
-                except: valor_projeto = 0.0
+                val_str = str(orcamento.valor_total_final or "0")
+                val_str = val_str.replace("R$", "").strip()
+                try:
+                    if "," in val_str and "." in val_str:
+                        val_str = val_str.replace(".", "").replace(",", ".")
+                    elif "," in val_str:
+                        val_str = val_str.replace(",", ".")
+                    valor_projeto = float(val_str)
+                except ValueError: 
+                    valor_projeto = 0.0
             
             total_recebido = 0.0
             if recebimento:
@@ -256,6 +248,11 @@ class RelatorioCompletoView(views.APIView):
                 primeira = comissoes.first()
                 if primeira: arquiteto_nome = primeira.beneficiario
             
+            if not arquiteto_nome and hasattr(a, 'arquiteto') and a.arquiteto:
+                 arquiteto_nome = a.arquiteto.nome
+
+            saldo_a_receber = max(0.0, valor_projeto - total_recebido)
+
             dados.append({
                 "agenda_id": a.id,
                 "data_inicio": a.data_inicio,
@@ -269,7 +266,7 @@ class RelatorioCompletoView(views.APIView):
                 "total_comissao": total_comissao,
                 "sobrou_liquido": valor_projeto - total_comissao,
                 "valor_pago_cliente": total_recebido,
-                "a_receber": valor_projeto - total_recebido
+                "a_receber": saldo_a_receber
             })
             
         return Response(dados)
